@@ -33,11 +33,15 @@ def db_eval_iou(annotation, segmentation, void_pixels=None):
     if j.ndim == 0:
         j = 1 if np.isclose(union, 0) else j
     else:
-        j[np.isclose(union, 0)] = 1
+        j[np.isclose(union, 0)] = 1  # NOTE: this confirms my guess that blank masks increases J scores
     return j
 
 
 def db_eval_boundary(annotation, segmentation, void_pixels=None, bound_th=0.008):
+    """
+    Compute Boundary F metric
+    bound_th: boundary threashold
+    """
     assert annotation.shape == segmentation.shape
     if void_pixels is not None:
         assert annotation.shape == void_pixels.shape
@@ -151,14 +155,15 @@ def _seg2bmap(seg, width=None, height=None):
         width > w | height > h | abs(ar1 - ar2) > 0.01
     ), "Can" "t convert %dx%d seg to %dx%d bmap." % (w, h, width, height)
 
-    e = np.zeros_like(seg)
-    s = np.zeros_like(seg)
-    se = np.zeros_like(seg)
+    e = np.zeros_like(seg)  # east
+    s = np.zeros_like(seg)  # south
+    se = np.zeros_like(seg)  # south-east
 
-    e[:, :-1] = seg[:, 1:]
-    s[:-1, :] = seg[1:, :]
-    se[:-1, :-1] = seg[1:, 1:]
+    e[:, :-1] = seg[:, 1:]  # Shift left by 1 pixel -> add 0s colum to east
+    s[:-1, :] = seg[1:, :]  # Shift up by 1 pixel -> add 0s row to south
+    se[:-1, :-1] = seg[1:, 1:]  # Shift left + up by 1 pixel
 
+    # Some hacks to get boundary pixel of width 1
     b = seg ^ e | seg ^ s | seg ^ se
     b[-1, :] = seg[-1, :] ^ e[-1, :]
     b[:, -1] = seg[:, -1] ^ s[:, -1]

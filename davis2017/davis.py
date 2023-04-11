@@ -9,7 +9,7 @@ class DAVIS(object):
     SUBSET_OPTIONS = ['train', 'val', 'test-dev', 'test-challenge']
     TASKS = ['semi-supervised', 'unsupervised']
     DATASET_WEB = 'https://davischallenge.org/davis2017/code.html'
-    VOID_LABEL = 255
+    VOID_LABEL = 255  # Background?
 
     def __init__(self, root, task='unsupervised', subset='val', sequences='all', resolution='480p', codalab=False):
         """
@@ -31,7 +31,8 @@ class DAVIS(object):
         self.img_path = os.path.join(self.root, 'JPEGImages', resolution)
         annotations_folder = 'Annotations' if task == 'semi-supervised' else 'Annotations_unsupervised'
         self.mask_path = os.path.join(self.root, annotations_folder, resolution)
-        year = '2019' if task == 'unsupervised' and (subset == 'test-dev' or subset == 'test-challenge') else '2017'
+        # year = '2019' if task == 'unsupervised' and (subset == 'test-dev' or subset == 'test-challenge') else '2017'
+        year = '2022'  # VISOR dataset
         self.imagesets_path = os.path.join(self.root, 'ImageSets', year)
 
         self._check_directories()
@@ -60,42 +61,78 @@ class DAVIS(object):
             raise FileNotFoundError(f'Subset sequences list for {self.subset} not found, download the missing subset '
                                     f'for the {self.task} task from {self.DATASET_WEB}')
         if self.subset in ['train', 'val'] and not os.path.exists(self.mask_path):
-            raise FileNotFoundError(f'Annotations folder for the {self.task} task not found, download it from {self.DATASET_WEB}')
+            raise FileNotFoundError(
+                f'Annotations folder for the {self.task} task not found, download it from {self.DATASET_WEB}')
 
     def get_frames(self, sequence):
+        """
+        Get RGB frame and its mask (if available)
+        If mask is unavailable, return None
+        """
         for img, msk in zip(self.sequences[sequence]['images'], self.sequences[sequence]['masks']):
             image = np.array(Image.open(img))
-            mask = None if msk is None else np.array(Image.open(msk))
+            mask = None if msk is None else np.array(
+                Image.open(msk))  # Background should be 0
             yield image, mask
 
     def _get_all_elements(self, sequence, obj_type):
+        """
+        Create a tensor of (#_masks, H_mask, W_Mask) or (#_images, H_image, W_image)
+        and load data into it.
+        """
+        obj_first_dict = {}  # A dictionary store firsts frame an object appears
+        stored_objs = set([0])  # Store background first
+
+        # Create a tensor of (N_masks, H_mask, W_mask)
         obj = np.array(Image.open(self.sequences[sequence][obj_type][0]))
         all_objs = np.zeros((len(self.sequences[sequence][obj_type]), *obj.shape))
         obj_id = []
-        for i, obj in enumerate(self.sequences[sequence][obj_type]):
-            all_objs[i, ...] = np.array(Image.open(obj))
+
+        for i, obj in enumerate(self.sequences[sequence][obj_type]):  # Already sorted
+            img = np.array(Image.open(obj))
+
+            if obj_type == 'masks':
+                unq_objs = np.unique(img)
+                if (unq_objs != 0).any():
+                    for j in unq_objs:
+                        if j not in stored_objs:
+                            # New object in a mask
+                            stored_objs.add(j)
+                            # Store the index of first frame appearance
+                            obj_first_dict[j] = i
+
+            all_objs[i, ...] = img
             obj_id.append(''.join(obj.split('/')[-1].split('.')[:-1]))
-        return all_objs, obj_id
+        # Return differently based on obj_type
+        if obj_type == 'images':
+            return all_objs, obj_id
+        else:
+            return all_objs, obj_id, obj_first_dict
 
     def get_all_images(self, sequence):
         return self._get_all_elements(sequence, 'images')
 
     def get_all_masks(self, sequence, separate_objects_masks=False):
-        masks, masks_id = self._get_all_elements(sequence, 'masks')
+        # TODO: Problem here
+        masks, masks_id, obj_first_dict = self._get_all_elements(sequence, 'masks')  # (N, H, W)
         masks_void = np.zeros_like(masks)
 
         # Separate void and object masks
+        # What does it mean void here, is it background?
+        # As I don't see any masks has 255 in value
         for i in range(masks.shape[0]):
-            masks_void[i, ...] = masks[i, ...] == 255
-            masks[i, masks[i, ...] == 255] = 0
+            masks_void[i, ...] = masks[i, ...] == 255  # Auto convert True/False to float
+            masks[i, masks[i, ...] == 255] = 0  # Convert 255 to 0?
 
         if separate_objects_masks:
-            num_objects = int(np.max(masks[0, ...]))
-            tmp = np.ones((num_objects, *masks.shape))
-            tmp = tmp * np.arange(1, num_objects + 1)[:, None, None, None]
-            masks = (tmp == masks[None, ...])
-            masks = masks > 0
-        return masks, masks_void, masks_id
+            # num_objects = int(np.max(masks[0, ...]))
+            # On all over frames, not just the first frame
+            num_objects = int(np.max(masks))
+            tmp = np.ones((num_objects, *masks.shape))  # (N_objects, N, H, W), all 1
+            tmp = tmp * np.arange(1, num_objects + 1)[:, None, None, None]  # Populate 1, 2, 3 ...
+            masks = (tmp == masks[None, ...])  # Convert back to 0.0/1.0 array
+            masks = masks > 0  # Separate object to background, to Boolean tensor
+        return masks, masks_void, masks_id, obj_first_dict
 
     def get_sequences(self):
         for seq in self.sequences:
@@ -119,4 +156,3 @@ if __name__ == '__main__':
             plt.subplot(2, 1, 2)
             plt.imshow(mask)
             plt.show(block=True)
-
